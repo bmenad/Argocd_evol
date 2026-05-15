@@ -1,0 +1,489 @@
+# Backup / Restore ArgoCD sur OpenShift GitOps Operator
+
+# ============================================
+# 1. CAS SIMPLE — Sauvegarder uniquement
+#    password admin + project tokens
+# ============================================
+
+## Export du secret principal
+
+```bash
+oc get secret argocd-secret \
+  -n <argocd-namespace> \
+  -o yaml > argocd-secret.yaml
+```
+
+## Ce que cela sauvegarde
+- password admin
+- JWT/session keys
+- project tokens
+- server.secretkey
+
+## Restauration
+
+⚠️ Attendre que l’instance ArgoCD soit recréée par l’opérateur avant restore.
+
+```bash
+oc apply -f argocd-secret.yaml
+```
+
+---
+
+# ============================================
+# 2. CAS INTERMÉDIAIRE — Sauvegarder
+#    tous les secrets ArgoCD utiles
+# ============================================
+
+## Export des secrets ArgoCD
+
+```bash
+oc get secret -n <argocd-namespace> \
+  -l app.kubernetes.io/part-of=argocd \
+  -o yaml > argocd-secrets.yaml
+```
+
+## Inclut généralement
+- argocd-secret
+- argocd-repository-*
+- argocd-repo-creds-*
+- argocd-cluster-*
+- argocd-notifications-secret
+
+## Restauration
+
+```bash
+oc apply -f argocd-secrets.yaml
+```
+
+---
+
+# ============================================
+# 3. CAS RECOMMANDÉ — Backup logique complet
+#    d’une instance ArgoCD
+# ============================================
+
+## Export logique ArgoCD
+
+```bash
+argocd admin export -n <argocd-namespace> \
+  > argocd-export.yaml
+```
+
+## Sauvegarder aussi le CR ArgoCD
+
+```bash
+oc get argocd <instance-name> \
+  -n <argocd-namespace> \
+  -o yaml > argocd-cr.yaml
+```
+
+## Sauvegarder les secrets
+
+```bash
+oc get secret -n <argocd-namespace> \
+  -l app.kubernetes.io/part-of=argocd \
+  -o yaml > argocd-secrets.yaml
+```
+
+## Sauvegarder les ConfigMaps importantes
+
+```bash
+oc get cm -n <argocd-namespace> \
+  -o yaml > configmaps.yaml
+```
+
+---
+
+# ============================================
+# 4. RESTAURATION COMPLÈTE D’UNE INSTANCE
+# ============================================
+
+## Étape 1 — Installer OpenShift GitOps Operator
+
+Depuis OperatorHub.
+
+---
+
+## Étape 2 — Recréer le namespace
+
+```bash
+oc create ns <argocd-namespace>
+```
+
+---
+
+## Étape 3 — Restaurer le CR ArgoCD
+
+```bash
+oc apply -f argocd-cr.yaml
+```
+
+---
+
+## Étape 4 — Attendre la reconciliation opérateur
+
+```bash
+oc get pods -n <argocd-namespace>
+```
+
+Attendre :
+- pods Running
+- services créés
+- instance opérationnelle
+
+---
+
+## Étape 5 — Restaurer les secrets
+
+```bash
+oc apply -f argocd-secrets.yaml
+```
+
+---
+
+## Étape 6 — Restaurer les ConfigMaps
+
+```bash
+oc apply -f configmaps.yaml
+```
+
+---
+
+## Étape 7 — Import logique ArgoCD
+
+```bash
+argocd admin import - < argocd-export.yaml
+```
+
+ou
+
+```bash
+cat argocd-export.yaml | argocd admin import
+```
+
+---
+
+# ============================================
+# 5. EXPORT MANUEL DES APPLICATIONS / PROJECTS
+# ============================================
+
+## Applications
+
+```bash
+oc get applications.argoproj.io \
+  -n <argocd-namespace> \
+  -o yaml > applications.yaml
+```
+
+## Projects
+
+```bash
+oc get appprojects.argoproj.io \
+  -n <argocd-namespace> \
+  -o yaml > projects.yaml
+```
+
+## Restore
+
+```bash
+oc apply -f projects.yaml
+oc apply -f applications.yaml
+```
+
+---
+
+# ============================================
+# 6. NETTOYAGE DES YAML AVANT RESTORE
+# ============================================
+
+## Supprimer les metadata inutiles
+
+```bash
+yq eval 'del(
+  .metadata.uid,
+  .metadata.resourceVersion,
+  .metadata.creationTimestamp,
+  .metadata.managedFields,
+  .status
+)' file.yaml
+```
+
+---
+
+# ============================================
+# 7. ORDRE RECOMMANDÉ DE RESTAURATION
+# ============================================
+
+1. Installer OpenShift GitOps Operator
+2. Créer namespace
+3. Restaurer ArgoCD CR
+4. Attendre reconciliation
+5. Restaurer secrets
+6. Restaurer ConfigMaps
+7. Import ArgoCD
+8. Vérifier Applications/Projects
+
+---
+
+# ============================================
+# 8. RECOMMANDATION PRODUCTION
+# ============================================
+
+## Minimum vital
+- argocd-secret
+- argocd admin export
+
+## Recommandé
+- CR ArgoCD
+- secrets
+- ConfigMaps
+
+## Enterprise / PRA
+- Velero / OADP
+- Vault / External Secrets / SealedSecrets
+
+---
+
+# ============================================
+# 9. POINTS IMPORTANTS
+# ============================================
+
+## argocd-secret est critique
+Contient :
+- admin password
+- JWT keys
+- server.secretkey
+
+Si perdu :
+- tokens invalidés
+- sessions perdues
+- reset auth possible
+
+---
+
+## Ne PAS restaurer les secrets trop tôt
+
+Toujours :
+1. laisser l’opérateur créer l’instance
+2. puis restaurer les secrets
+
+Sinon :
+- secrets écrasés
+- reconciliation operator
+- drift
+
+---
+
+## Sécurité
+
+Les exports contiennent :
+- mots de passe
+- JWT
+- clés SSH
+- tokens Git
+- credentials clusters
+
+=> stocker chiffré.
+
+
+
+
+
+
+
+# Prérequis exacts avant `argocd admin export`
+
+La commande :
+
+```bash
+argocd admin export
+```
+
+ne se connecte PAS à une instance ArgoCD via l’API ArgoCD classique.
+
+Elle utilise :
+- le contexte Kubernetes/OpenShift courant
+- via kubeconfig / oc login
+
+Donc :
+👉 il faut être connecté au BON cluster OpenShift
+👉 et cibler le BON namespace ArgoCD.
+
+---
+
+# ============================================
+# 1. Se connecter au bon cluster OpenShift
+# ============================================
+
+## Login OpenShift
+
+```bash
+oc login https://api.cluster.domain:6443
+```
+
+---
+
+# ============================================
+# 2. Vérifier le cluster courant
+# ============================================
+
+```bash
+oc config current-context
+```
+
+Très important si plusieurs clusters.
+
+---
+
+# ============================================
+# 3. Vérifier l’utilisateur courant
+# ============================================
+
+```bash
+oc whoami
+```
+
+---
+
+# ============================================
+# 4. Identifier les instances ArgoCD
+# ============================================
+
+```bash
+oc get argocd -A
+```
+
+Exemple :
+
+```text
+NAMESPACE           NAME
+openshift-gitops    openshift-gitops
+prod-gitops         prod
+team-a-gitops       team-a
+```
+
+---
+
+# ============================================
+# 5. Vérifier le namespace cible
+# ============================================
+
+Exemple :
+
+```bash
+oc get pods -n prod-gitops
+```
+
+Tu dois voir les pods ArgoCD :
+- argocd-server
+- repo-server
+- application-controller
+- redis
+
+---
+
+# ============================================
+# 6. Lancer l’export avec namespace explicite
+# ============================================
+
+RECOMMANDÉ :
+
+```bash
+argocd admin export -n prod-gitops \
+  > backup.yaml
+```
+
+---
+
+# ============================================
+# 7. Ce qu’il NE faut PAS faire
+# ============================================
+
+Éviter :
+
+```bash
+argocd admin export
+```
+
+sans :
+- namespace
+- vérification du contexte cluster
+
+car tu peux exporter :
+- la mauvaise instance
+- le mauvais cluster
+
+---
+
+# ============================================
+# 8. Important : aucun login ArgoCD nécessaire
+# ============================================
+
+Contrairement à :
+
+```bash
+argocd login
+```
+
+la commande :
+
+```bash
+argocd admin export
+```
+
+n’utilise pas l’API ArgoCD distante.
+
+Elle utilise :
+- kubeconfig
+- API Kubernetes/OpenShift
+- droits RBAC Kubernetes
+
+Donc :
+✅ `oc login` suffit.
+
+---
+
+# ============================================
+# 9. Droits nécessaires
+# ============================================
+
+Le compte OpenShift/K8s doit pouvoir lire :
+- secrets
+- configmaps
+- applications.argoproj.io
+- appprojects.argoproj.io
+
+dans le namespace ArgoCD.
+
+En pratique :
+- cluster-admin
+ou
+- role dédié lecture/export
+
+---
+
+# ============================================
+# 10. Workflow recommandé
+# ============================================
+
+```bash
+# Connexion cluster
+oc login https://api.cluster.domain:6443
+
+# Vérification contexte
+oc config current-context
+
+# Vérification user
+oc whoami
+
+# Voir instances ArgoCD
+oc get argocd -A
+
+# Vérifier namespace cible
+oc get pods -n prod-gitops
+
+# Export
+argocd admin export -n prod-gitops \
+  > prod-backup.yaml
+```
+
