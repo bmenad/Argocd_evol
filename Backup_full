@@ -1,0 +1,333 @@
+# =========================================================
+# BACKUP COMPLET ARGOCD OPENSHIFT GITOPS (IZARU)
+# =========================================================
+#
+# CONTEXTE
+# - Namespace conservé : izaru
+# - Migration in-place
+# - OpenShift GitOps Operator
+# - Outils disponibles :
+#     - oc
+#     - argocd
+#
+# OBJECTIFS
+# - Backup logique ArgoCD
+# - Backup secrets critiques
+# - Backup namespace complet
+# - Restore rapide
+# - Rollback migration
+#
+# =========================================================
+# 1. VARIABLES
+# =========================================================
+
+export NS=izaru
+export BACKUP_ROOT=argocd-backup-$(date +%F)
+
+# =========================================================
+# 2. STRUCTURE BACKUP
+# =========================================================
+
+mkdir -p ${BACKUP_ROOT}
+
+cd ${BACKUP_ROOT}
+
+mkdir -p \
+  admin-export \
+  operator \
+  namespace \
+  applications \
+  projects \
+  repositories \
+  clusters \
+  secrets \
+  configmaps \
+  full
+
+# =========================================================
+# 3. BACKUP LOGIQUE ARGOCD
+# =========================================================
+
+# Export logique complet ArgoCD
+argocd admin export \
+  > admin-export/argocd-export.yaml
+
+# Vérification rapide
+head admin-export/argocd-export.yaml
+
+# =========================================================
+# 4. BACKUP OPERATOR OPENSHIFT GITOPS
+# =========================================================
+
+# Export CR ArgoCD Operator
+oc get argocd -n ${NS} -o yaml \
+  > operator/argocd-cr.yaml
+
+# =========================================================
+# 5. BACKUP SECRETS CRITIQUES
+# =========================================================
+
+# Secret principal ArgoCD
+# Contient :
+# - admin.password
+# - server.secretkey
+# - oidc/webhook secrets
+
+oc get secret argocd-secret -n ${NS} -o yaml \
+  > secrets/argocd-secret.yaml
+
+# Repository secrets
+oc get secret -n ${NS} \
+  -l argocd.argoproj.io/secret-type=repository \
+  -o yaml \
+  > secrets/repositories.yaml
+
+# Repo creds
+oc get secret -n ${NS} \
+  -l argocd.argoproj.io/secret-type=repo-creds \
+  -o yaml \
+  > secrets/repo-creds.yaml
+
+# Cluster credentials
+oc get secret -n ${NS} \
+  -l argocd.argoproj.io/secret-type=cluster \
+  -o yaml \
+  > secrets/clusters.yaml
+
+# Dex (si présent)
+oc get secret argocd-dex-server -n ${NS} -o yaml \
+  > secrets/argocd-dex-server.yaml
+
+# Tous les secrets (safety net)
+oc get secrets -n ${NS} -o yaml \
+  > secrets/all-secrets.yaml
+
+# =========================================================
+# 6. BACKUP CONFIGMAPS CRITIQUES
+# =========================================================
+
+# argocd-cm
+oc get cm argocd-cm -n ${NS} -o yaml \
+  > configmaps/argocd-cm.yaml
+
+# argocd-rbac-cm
+oc get cm argocd-rbac-cm -n ${NS} -o yaml \
+  > configmaps/argocd-rbac-cm.yaml
+
+# notifications
+oc get cm argocd-notifications-cm -n ${NS} -o yaml \
+  > configmaps/argocd-notifications-cm.yaml
+
+# ssh known hosts
+oc get cm argocd-ssh-known-hosts-cm -n ${NS} -o yaml \
+  > configmaps/argocd-ssh-known-hosts-cm.yaml
+
+# tls certs
+oc get cm argocd-tls-certs-cm -n ${NS} -o yaml \
+  > configmaps/argocd-tls-certs-cm.yaml
+
+# =========================================================
+# 7. BACKUP APPLICATIONS
+# =========================================================
+
+# Export toutes les applications
+for app in $(argocd app list -o name); do
+  argocd app get $app -o yaml \
+    > applications/${app}.yaml
+done
+
+# Export AppProjects
+oc get appprojects -n ${NS} -o yaml \
+  > projects/appprojects.yaml
+
+# =========================================================
+# 8. BACKUP NAMESPACE COMPLET (SAFETY NET)
+# =========================================================
+
+oc get all,cm,secret,sa,role,rolebinding,pvc,route \
+  -n ${NS} -o yaml \
+  > full/namespace-complete.yaml
+
+# Export namespace
+oc get namespace ${NS} -o yaml \
+  > namespace/namespace.yaml
+
+# =========================================================
+# 9. ARCHIVE FINALE
+# =========================================================
+
+cd ..
+
+tar czf ${BACKUP_ROOT}.tar.gz ${BACKUP_ROOT}
+
+# Vérification archive
+tar tf ${BACKUP_ROOT}.tar.gz
+
+# =========================================================
+# 10. VALIDATION BACKUP
+# =========================================================
+
+# Test restore dry-run secret principal
+oc apply --dry-run=client \
+  -f ${BACKUP_ROOT}/secrets/argocd-secret.yaml
+
+# =========================================================
+# 11. AVANT MIGRATION
+# =========================================================
+
+# Désactiver autosync sur toutes les apps
+for app in $(argocd app list -o name); do
+  argocd app set $app --sync-policy none
+done
+
+# IMPORTANT :
+# Désactiver également PRUNE sur l'application parent
+#
+# syncPolicy:
+#   automated:
+#     prune: false
+#     selfHeal: false
+
+# =========================================================
+# =========================================================
+# ===================== RESTORE ===========================
+# =========================================================
+# =========================================================
+
+# =========================================================
+# CAS 1 - RESTORE SECRETS UNIQUEMENT
+# =========================================================
+
+# Restore argocd-secret
+oc apply -f secrets/argocd-secret.yaml
+
+# Restore repositories
+oc apply -f secrets/repositories.yaml
+
+# Restore repo-creds
+oc apply -f secrets/repo-creds.yaml
+
+# Restore cluster credentials
+oc apply -f secrets/clusters.yaml
+
+# Restart ArgoCD
+oc rollout restart deployment -n ${NS}
+
+# Vérification
+argocd repo list
+argocd cluster list
+
+# =========================================================
+# CAS 2 - RESTORE CONFIGMAPS
+# =========================================================
+
+# Restore argocd-cm
+oc apply -f configmaps/argocd-cm.yaml
+
+# Restore RBAC
+oc apply -f configmaps/argocd-rbac-cm.yaml
+
+# Restore notifications
+oc apply -f configmaps/argocd-notifications-cm.yaml
+
+# Restart
+oc rollout restart deployment -n ${NS}
+
+# =========================================================
+# CAS 3 - RESTORE APPLICATIONS
+# =========================================================
+
+# Restore AppProjects
+oc apply -f projects/appprojects.yaml
+
+# Restore applications
+oc apply -f applications/
+
+# Vérification
+argocd app list
+
+# Sync si nécessaire
+argocd app sync <app>
+
+# =========================================================
+# CAS 4 - RESTORE LOGIQUE COMPLET ARGOCD
+# =========================================================
+
+argocd admin import \
+  - < admin-export/argocd-export.yaml
+
+# Vérifications
+argocd repo list
+argocd cluster list
+argocd app list
+
+# Restart
+oc rollout restart deployment -n ${NS}
+
+# =========================================================
+# CAS 5 - RESTORE CR OPERATOR
+# =========================================================
+
+oc apply -f operator/argocd-cr.yaml
+
+# Vérification
+oc get argocd -n ${NS}
+oc get pods -n ${NS}
+
+# =========================================================
+# CAS 6 - RESTORE NAMESPACE COMPLET
+# =========================================================
+
+# Restore namespace
+oc apply -f namespace/namespace.yaml
+
+# Restore complet
+oc apply -f full/namespace-complete.yaml
+
+# Restart
+oc rollout restart deployment -n ${NS}
+
+# Vérifications
+argocd app list
+argocd repo list
+argocd cluster list
+
+# =========================================================
+# CAS 7 - ROLLBACK MIGRATION GITOPS
+# =========================================================
+
+# 1. Git revert
+# git revert <commit>
+# ou retour ancienne branche
+
+# 2. Sync parent app
+argocd app sync <parent-app>
+
+# 3. Restore secrets si nécessaire
+oc apply -f secrets/argocd-secret.yaml
+
+# =========================================================
+# VÉRIFICATIONS FINALES
+# =========================================================
+
+# Applications
+argocd app list
+
+# Repositories
+argocd repo list
+
+# Clusters
+argocd cluster list
+
+# Santé applications
+argocd app wait <app> --health
+
+# Tester :
+# - login UI
+# - SSO
+# - RBAC
+# - sync applications
+#
+# =========================================================
+# FIN
+# =========================================================
