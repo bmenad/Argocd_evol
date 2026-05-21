@@ -114,26 +114,19 @@ oc get cm argocd-cm -n ${NS} -o yaml \
 oc get cm argocd-rbac-cm -n ${NS} -o yaml \
   > configmaps/argocd-rbac-cm.yaml
 
-# notifications
-oc get cm argocd-notifications-cm -n ${NS} -o yaml \
-  > configmaps/argocd-notifications-cm.yaml
-
-# ssh known hosts
-oc get cm argocd-ssh-known-hosts-cm -n ${NS} -o yaml \
-  > configmaps/argocd-ssh-known-hosts-cm.yaml
-
-# tls certs
-oc get cm argocd-tls-certs-cm -n ${NS} -o yaml \
-  > configmaps/argocd-tls-certs-cm.yaml
-
 # =========================================================
 # 7. BACKUP APPLICATIONS
 # =========================================================
 
 # Export toutes les applications
-for app in $(argocd app list -o name); do
-  argocd app get $app -o yaml \
-    > applications/${app}.yaml
+
+for app in $(./argocd app list -o name)
+do
+  safe_name=$(echo "$app" | sed 's#/#_#g')
+
+  ./argocd app get "$app" -o yaml \
+    > applications/${safe_name}.yaml
+done
 done
 
 # Export AppProjects
