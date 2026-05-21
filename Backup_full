@@ -3,7 +3,7 @@
 # =========================================================
 #
 # CONTEXTE
-# - Namespace conservé : izaru
+# - Namespace conservé : ns_name
 # - Migration in-place
 # - OpenShift GitOps Operator
 # - Outils disponibles :
@@ -21,7 +21,7 @@
 # 1. VARIABLES
 # =========================================================
 
-export NS=izaru
+export NS=ns_name
 export BACKUP_ROOT=argocd-backup-$(date +%F)
 
 # =========================================================
@@ -94,10 +94,6 @@ oc get secret -n ${NS} \
   -o yaml \
   > secrets/clusters.yaml
 
-# Dex (si présent)
-oc get secret argocd-dex-server -n ${NS} -o yaml \
-  > secrets/argocd-dex-server.yaml
-
 # Tous les secrets (safety net)
 oc get secrets -n ${NS} -o yaml \
   > secrets/all-secrets.yaml
@@ -137,7 +133,7 @@ oc get appprojects -n ${NS} -o yaml \
 # 8. BACKUP NAMESPACE COMPLET (SAFETY NET)
 # =========================================================
 
-oc get all,cm,secret,sa,role,rolebinding,pvc,route \
+oc get all,cm,secret,sa,pvc,route \
   -n ${NS} -o yaml \
   > full/namespace-complete.yaml
 
