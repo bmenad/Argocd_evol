@@ -133,7 +133,7 @@ oc get appprojects -n ${NS} -o yaml \
 # 8. BACKUP NAMESPACE COMPLET (SAFETY NET)
 # =========================================================
 
-oc get all,cm,secret,sa,pvc,route \
+oc get all,cm,secret,sa,role,rolebinding,pvc,route \
   -n ${NS} -o yaml \
   > full/namespace-complete.yaml
 
